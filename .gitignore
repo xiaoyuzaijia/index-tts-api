@@ -1,0 +1,36 @@
+# Development Tools.
+.mypy_cache/
+.ruff_cache/
+__pycache__/
+.idea/
+.vscode/
+
+# Environments.
+.venv*/
+venv*/
+conda_env*/
+
+# Python Bytecode.
+*.py[cod]
+
+# Distribution/Packaging.
+/build/
+/dist/
+*.egg-info/
+.pypirc
+
+# Operating System Junk.
+*.DS_Store
+Thumbs.db
+desktop.ini
+
+# IndexTTS.
+/cache/
+/checkpoints/*
+# Jupyter自动备份
+*.ipynb_checkpoints*
+!/checkpoints/*.yaml
+/outputs/
+
+
+/examples/
