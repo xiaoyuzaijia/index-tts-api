@@ -32,6 +32,5 @@ desktop.ini
 !/checkpoints/*.yaml
 /outputs/
 
-# 音频文件
+
 /examples/
-/tests/sample_prompt.wav
