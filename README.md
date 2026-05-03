@@ -120,6 +120,32 @@ with open("output.wav", "wb") as out:
 print(f"生成完成，{len(r.content)} bytes")
 ```
 
+#### 从文本自动决定情感的示例
+
+```bash
+curl -X POST http://localhost:8000/api/v1/tts \
+  -F "spk_audio=@examples/voice_01.wav" \
+  -F "text=今天真是太开心了！" \
+  -F "use_emo_text=true" \
+  -o happy.wav
+```
+
+```python
+import requests
+
+with open("examples/voice_01.wav", "rb") as f:
+    r = requests.post(
+        "http://localhost:8000/api/v1/tts",
+        files={"spk_audio": f},
+        data={"text": "今天真是太开心了！",
+              "use_emo_text": "true"},
+        timeout=120,
+    )
+with open("happy.wav", "wb") as out:
+    out.write(r.content)
+print(f"生成完成，{len(r.content)} bytes")
+```
+
 #### 带情感向量的示例
 
 ```bash
