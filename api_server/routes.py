@@ -26,6 +26,26 @@ def get_file_manager(request: Request):
     return request.app.state.file_manager
 
 
+# ── 音频路径解析 ───────────────────────────────────────────
+
+def _resolve_audio(fm, upload_file, server_path: str | None, audio_type: str):
+    """解析音频来源。服务端路径优先，上传文件作为备选。
+
+    Returns:
+        (path: Path, is_temp: bool) — is_temp=True 表示需要推理后清理
+    """
+    if server_path:
+        return fm.resolve_audio_path(server_path), False
+    if upload_file:
+        return fm.save_upload(upload_file), True
+    if audio_type == "spk":
+        raise HTTPException(
+            status_code=422,
+            detail="必须提供 spk_audio（上传音频文件）或 spk_audio_path（服务端路径）",
+        )
+    return None, False
+
+
 # ── 健康检查 ──────────────────────────────────────────────
 
 @router.get("/health", response_model=HealthResponse)
@@ -114,19 +134,26 @@ async def parse_tts_form(
 
 @router.post("/tts")
 async def tts(
-    spk_audio: UploadFile = File(..., description="说话人参考音频 (wav)"),
-    emo_audio: UploadFile | None = File(None, description="情感参考音频 (wav)"),
     request: TTSRequest = Depends(parse_tts_form),
+    spk_audio: UploadFile | None = File(None, description="说话人参考音频 (wav) — 上传文件"),
+    spk_audio_path: str | None = Form(None, description="说话人参考音频 — 服务端路径（优先）"),
+    emo_audio: UploadFile | None = File(None, description="情感参考音频 (wav) — 上传文件"),
+    emo_audio_path: str | None = Form(None, description="情感参考音频 — 服务端路径（优先）"),
     service: TTSService = Depends(get_service),
     fm=Depends(get_file_manager),
 ):
-    """非流式 TTS：上传参考音频和文本，返回完整 WAV 音频。"""
+    """非流式 TTS：通过服务端路径或上传文件指定参考音频，返回完整 WAV。"""
     if not service.is_loaded:
         raise HTTPException(status_code=503, detail="模型尚未加载完成")
 
-    # 保存上传的音频文件
-    spk_path = fm.save_upload(spk_audio)
-    emo_path = fm.save_upload(emo_audio) if emo_audio else None
+    spk_path, spk_temp = _resolve_audio(fm, spk_audio, spk_audio_path, "spk")
+    emo_path, emo_temp = _resolve_audio(fm, emo_audio, emo_audio_path, "emo")
+
+    temp_paths = []
+    if spk_temp and spk_path:
+        temp_paths.append(spk_path)
+    if emo_temp and emo_path:
+        temp_paths.append(emo_path)
 
     try:
         loop = asyncio.get_running_loop()
@@ -134,7 +161,6 @@ async def tts(
         def _sync_infer():
             with service.inference_lock:
                 kwargs = request.to_generation_kwargs()
-                # infer() 已返回 (sampling_rate, numpy_array)
                 return service.model.infer(
                     spk_audio_prompt=str(spk_path),
                     text=request.text,
@@ -154,37 +180,46 @@ async def tts(
 
         sr, wav_np = await loop.run_in_executor(None, _sync_infer)
 
-        # 将 numpy 数组转为 WAV 字节流
-        wav_tensor = torch.from_numpy(wav_np).T  # (samples, channels) → (channels, samples)
+        wav_tensor = torch.from_numpy(wav_np).T
         buf = io.BytesIO()
         torchaudio.save(buf, wav_tensor, sr, format="wav")
         buf.seek(0)
 
         return Response(content=buf.getvalue(), media_type="audio/wav")
 
+    except HTTPException:
+        raise
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"推理失败: {e}")
     finally:
-        fm.cleanup(spk_path, *([emo_path] if emo_path else []))
+        fm.cleanup(*temp_paths)
 
 
 # ── 流式 TTS (SSE) ────────────────────────────────────────
 
 @router.post("/tts/stream")
 async def tts_stream(
-    spk_audio: UploadFile = File(..., description="说话人参考音频 (wav)"),
-    emo_audio: UploadFile | None = File(None, description="情感参考音频 (wav)"),
     request: TTSRequest = Depends(parse_tts_form),
+    spk_audio: UploadFile | None = File(None, description="说话人参考音频 (wav) — 上传文件"),
+    spk_audio_path: str | None = Form(None, description="说话人参考音频 — 服务端路径（优先）"),
+    emo_audio: UploadFile | None = File(None, description="情感参考音频 (wav) — 上传文件"),
+    emo_audio_path: str | None = Form(None, description="情感参考音频 — 服务端路径（优先）"),
     service: TTSService = Depends(get_service),
     fm=Depends(get_file_manager),
 ):
-    """流式 TTS：上传参考音频和文本，通过 SSE 逐段返回音频。"""
+    """流式 TTS：通过服务端路径或上传文件指定参考音频，SSE 逐段返回音频。"""
     if not service.is_loaded:
         raise HTTPException(status_code=503, detail="模型尚未加载完成")
 
-    spk_path = fm.save_upload(spk_audio)
-    emo_path = fm.save_upload(emo_audio) if emo_audio else None
+    spk_path, spk_temp = _resolve_audio(fm, spk_audio, spk_audio_path, "spk")
+    emo_path, emo_temp = _resolve_audio(fm, emo_audio, emo_audio_path, "emo")
+
+    temp_paths = []
+    if spk_temp and spk_path:
+        temp_paths.append(spk_path)
+    if emo_temp and emo_path:
+        temp_paths.append(emo_path)
 
     async def generate_sse():
         try:
@@ -193,7 +228,6 @@ async def tts_stream(
             kwargs = request.to_generation_kwargs()
 
             def _sync_stream():
-                # 直接调用 infer_generator 以获取真正的生成器（而非 infer() 的 list()[0]）
                 gen = service.model.infer_generator(
                     spk_audio_prompt=str(spk_path),
                     text=request.text,
@@ -217,7 +251,6 @@ async def tts_stream(
                         if item is None:
                             continue
                         if isinstance(item, torch.Tensor):
-                            # BigVGAN 输出 float32，值在 int16 范围，需转为 int16
                             audio_tensor = item.to(torch.int16)
                             buf = io.BytesIO()
                             torchaudio.save(buf, audio_tensor, sr, format="wav")
@@ -232,18 +265,16 @@ async def tts_stream(
 
             chunks = await loop.run_in_executor(None, _sync_stream)
 
-            # 发送所有片段
             for chunk in chunks:
                 yield f"data: {json.dumps(chunk)}\n\n"
 
-            # 发送结束信号
             yield f"data: {json.dumps({'done': True, 'total_segments': len(chunks)})}\n\n"
 
         except Exception as e:
             traceback.print_exc()
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
         finally:
-            fm.cleanup(spk_path, *([emo_path] if emo_path else []))
+            fm.cleanup(*temp_paths)
 
     return StreamingResponse(
         generate_sse(),
@@ -251,6 +282,6 @@ async def tts_stream(
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",  # 禁用 nginx 缓冲
+            "X-Accel-Buffering": "no",
         },
     )

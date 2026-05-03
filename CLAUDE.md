@@ -41,7 +41,7 @@ PYTHONPATH="$PYTHONPATH:." uv run <script.py>
 api_server/
     config.py          # pydantic-settings, INDEXTTS_ env prefix
     models.py          # Pydantic schemas: TTSRequest, HealthResponse, InfoResponse
-    file_manager.py    # Temp file staging with UUID names, periodic TTL cleanup
+    file_manager.py    # Temp file staging + server audio path resolution with security checks
     service.py         # IndexTTS2 singleton with threading.Lock for thread safety
     routes.py          # 4 endpoints: health, info, tts, tts/stream
     main.py            # FastAPI app factory + lifespan (model loaded at startup)
@@ -56,6 +56,7 @@ api.py                 # One-command launcher
 4. **`infer()` already returns `(sr, wav_np)`** — do NOT wrap with extra `list(...)[0]`.
 5. **Streaming must use `infer_generator()` directly** — `infer()` with `stream_return=True` consumes the generator into a list and returns only the first element.
 6. **BigVGAN outputs float32 in int16 range** (not [-1, 1]). Use `.to(torch.int16)` before `torchaudio.save()`.
+7. **Two ways to specify reference audio**: `spk_audio_path` / `emo_audio_path` (server-side path, preferred) or `spk_audio` / `emo_audio` (file upload). Server path takes priority when both given. Paths are validated to stay within `allowed_audio_dirs` (default: `examples/`).
 
 ### Endpoints
 

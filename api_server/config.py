@@ -23,5 +23,8 @@ class Settings(BaseSettings):
     temp_dir: str = "api_server/api_temp"
     max_queue_size: int = 10
 
+    # 服务端参考音频允许的目录（分号分隔，相对于项目根目录的路径）
+    allowed_audio_dirs: str = "examples"
+
     # 文件清理
     temp_file_ttl_seconds: int = 300  # 上传文件 5 分钟后自动删除

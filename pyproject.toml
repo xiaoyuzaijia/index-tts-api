@@ -1,5 +1,5 @@
 [project]
-name = "indextts"
+name = "index-tts-api"
 version = "2.0.0"
 description = "IndexTTS2: A Breakthrough in Emotionally Expressive and Duration-Controlled Auto-Regressive Zero-Shot Text-to-Speech"
 authors = [{ name = "Bilibili IndexTTS Team" }]
@@ -94,6 +94,9 @@ indextts = "indextts.cli:main"
 # NOTE: Use `uv tool install -e .` to install the package as a CLI tool.
 requires = ["hatchling >= 1.27.0"]
 build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["indextts"]
 
 [tool.uv]
 # Disable build isolation when building DeepSpeed from source.

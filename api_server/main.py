@@ -20,7 +20,11 @@ async def lifespan(app: FastAPI):
 
     # 初始化单例
     service = TTSService.get_instance(settings)
-    file_manager = FileManager(settings.temp_dir, settings.temp_file_ttl_seconds)
+    file_manager = FileManager(
+        settings.temp_dir,
+        settings.temp_file_ttl_seconds,
+        settings.allowed_audio_dirs,
+    )
 
     # 模型加载是 CPU/磁盘密集型操作，放入线程池避免阻塞事件循环
     print(">> 正在加载 IndexTTS2 模型（可能需要几分钟）...")

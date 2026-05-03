@@ -24,7 +24,8 @@ import httpx
 import torch
 
 ROOT = Path(__file__).resolve().parent.parent
-SAMPLE_WAV = ROOT / "tests" / "sample_prompt.wav"
+SAMPLE_WAV = ROOT / "tests" / "sample_prompt.wav"       # 文件上传方式测试用
+SAMPLE_PROMPT_NAME = "sample_prompt.wav"                  # 服务端路径方式测试用
 OUTPUT_DIR = ROOT / "outputs"
 
 PASS = "✓"
@@ -94,9 +95,63 @@ class APITester:
             self._check("请求成功", False, str(e))
 
     async def test_tts_non_streaming(self, text: str, suffix: str = "", emo_vector: str | None = None):
-        """测试非流式 TTS"""
+        """测试非流式 TTS（使用服务端路径）"""
         emo_label = f", emo_vector={emo_vector}" if emo_vector else ""
         print(bold(f"\n── POST /api/v1/tts (text=\"{text[:20]}...\"{emo_label}) ──"))
+
+        try:
+            async with httpx.AsyncClient(timeout=120) as client:
+                data = {
+                    "spk_audio_path": SAMPLE_PROMPT_NAME,
+                    "text": text,
+                    "max_text_tokens_per_segment": 80,
+                    "top_p": 0.8,
+                    "temperature": 0.8,
+                }
+                if emo_vector:
+                    data["emo_vector"] = emo_vector
+                    data["emo_alpha"] = 0.6
+
+                r = await client.post(
+                    f"{self.base_url}/api/v1/tts",
+                    data=data,
+                )
+
+            self._check("HTTP 200", r.status_code == 200, f"status={r.status_code}")
+            if r.status_code != 200:
+                self._check("错误详情", False, r.text[:200])
+                return
+
+            content = r.content
+            self._check("响应体非空", len(content) > 0, f"{len(content)} bytes")
+
+            OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+            tag = suffix or text[:10].replace(" ", "_")
+            out_path = OUTPUT_DIR / f"api_test_{tag}.wav"
+            out_path.write_bytes(content)
+
+            try:
+                with wave.open(io.BytesIO(content), "rb") as wf:
+                    channels = wf.getnchannels()
+                    sample_width = wf.getsampwidth()
+                    framerate = wf.getframerate()
+                    n_frames = wf.getnframes()
+                    duration = n_frames / framerate
+                    self._check(
+                        "WAV 格式有效",
+                        True,
+                        f"{channels}ch, {sample_width*8}bit, {framerate}Hz, {duration:.1f}s → {out_path.name}",
+                    )
+                    self._check("音频时长 > 0.1s", duration > 0.1, f"{duration:.2f}s")
+            except Exception as e:
+                self._check("WAV 解析", False, str(e))
+
+        except Exception as e:
+            self._check("请求成功", False, str(e))
+
+    async def test_tts_file_upload(self, text: str, suffix: str = ""):
+        """测试非流式 TTS（使用文件上传方式）"""
+        print(bold(f"\n── POST /api/v1/tts (文件上传, text=\"{text[:20]}...\") ──"))
 
         if not SAMPLE_WAV.exists():
             self._check("参考音频", False, f"文件不存在: {SAMPLE_WAV}")
@@ -111,9 +166,6 @@ class APITester:
                     "top_p": 0.8,
                     "temperature": 0.8,
                 }
-                if emo_vector:
-                    data["emo_vector"] = emo_vector
-                    data["emo_alpha"] = 0.6
 
                 r = await client.post(
                     f"{self.base_url}/api/v1/tts",
@@ -129,13 +181,11 @@ class APITester:
             content = r.content
             self._check("响应体非空", len(content) > 0, f"{len(content)} bytes")
 
-            # 保存到 outputs/
             OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
             tag = suffix or text[:10].replace(" ", "_")
             out_path = OUTPUT_DIR / f"api_test_{tag}.wav"
             out_path.write_bytes(content)
 
-            # 验证 WAV 头并打印信息
             try:
                 with wave.open(io.BytesIO(content), "rb") as wf:
                     channels = wf.getnchannels()
@@ -156,17 +206,13 @@ class APITester:
             self._check("请求成功", False, str(e))
 
     async def test_tts_streaming(self, text: str, suffix: str = ""):
-        """测试流式 TTS (SSE)"""
+        """测试流式 TTS (SSE)（使用服务端路径）"""
         print(bold(f"\n── POST /api/v1/tts/stream (text=\"{text[:20]}...\") ──"))
-
-        if not SAMPLE_WAV.exists():
-            self._check("参考音频", False, f"文件不存在: {SAMPLE_WAV}")
-            return
 
         try:
             async with httpx.AsyncClient(timeout=120) as client:
-                files = {"spk_audio": (SAMPLE_WAV.name, open(SAMPLE_WAV, "rb"), "audio/wav")}
                 data = {
+                    "spk_audio_path": SAMPLE_PROMPT_NAME,
                     "text": text,
                     "max_text_tokens_per_segment": 80,
                     "top_p": 0.8,
@@ -180,7 +226,6 @@ class APITester:
                 async with client.stream(
                     "POST",
                     f"{self.base_url}/api/v1/tts/stream",
-                    files=files,
                     data=data,
                 ) as response:
                     self._check("HTTP 200", response.status_code == 200, f"status={response.status_code}")
@@ -257,23 +302,20 @@ class APITester:
             # 空文本
             r = await client.post(
                 f"{self.base_url}/api/v1/tts",
-                files={},
-                data={"text": "", "max_text_tokens_per_segment": 80},
+                data={"spk_audio_path": SAMPLE_PROMPT_NAME, "text": ""},
             )
             self._check("空文本 → 422", r.status_code == 422, f"status={r.status_code}")
 
             # 无效 emo_vector
-            if SAMPLE_WAV.exists():
-                files = {"spk_audio": (SAMPLE_WAV.name, open(SAMPLE_WAV, "rb"), "audio/wav")}
-                r = await client.post(
-                    f"{self.base_url}/api/v1/tts",
-                    files=files,
-                    data={
-                        "text": "测试",
-                        "emo_vector": "1,2,3",  # 只有 3 个值，需要 8 个
-                    },
-                )
-                self._check("无效 emo_vector → 422", r.status_code == 422, f"status={r.status_code}")
+            r = await client.post(
+                f"{self.base_url}/api/v1/tts",
+                data={
+                    "spk_audio_path": SAMPLE_PROMPT_NAME,
+                    "text": "测试",
+                    "emo_vector": "1,2,3",
+                },
+            )
+            self._check("无效 emo_vector → 422", r.status_code == 422, f"status={r.status_code}")
 
             # 无参考音频
             r = await client.post(
@@ -281,6 +323,27 @@ class APITester:
                 data={"text": "测试"},
             )
             self._check("无参考音频 → 422", r.status_code == 422, f"status={r.status_code}")
+
+            # 无效的服务端路径
+            r = await client.post(
+                f"{self.base_url}/api/v1/tts",
+                data={"spk_audio_path": "nonexistent_file.wav", "text": "测试"},
+            )
+            self._check("无效 spk_audio_path → 500", r.status_code == 500, f"status={r.status_code}")
+
+        # 服务端路径 + 上传文件同时提供（路径优先）— 会触发推理，需要更长超时
+        if SAMPLE_WAV.exists():
+            async with httpx.AsyncClient(timeout=120) as client:
+                files = {"spk_audio": (SAMPLE_WAV.name, open(SAMPLE_WAV, "rb"), "audio/wav")}
+                r = await client.post(
+                    f"{self.base_url}/api/v1/tts",
+                    files=files,
+                    data={
+                        "spk_audio_path": SAMPLE_PROMPT_NAME,
+                        "text": "两个音频都提供时路径优先",
+                    },
+                )
+                self._check("同时提供路径和文件 → 200", r.status_code == 200, f"status={r.status_code}")
 
     def summary(self):
         """打印测试摘要"""
@@ -321,7 +384,8 @@ async def main():
 
     print(bold(f"IndexTTS2 API 测试"))
     print(f"服务地址: {args.base_url}")
-    print(f"参考音频: {SAMPLE_WAV}")
+    print(f"参考音频 (服务端路径): {SAMPLE_PROMPT_NAME}")
+    print(f"参考音频 (文件上传): {SAMPLE_WAV}")
 
     tester = APITester(args.base_url)
 
@@ -341,6 +405,9 @@ async def main():
             suffix="happy",
             emo_vector="0.5,0,0,0,0,0,0,0",
         )
+
+        # 文件上传方式
+        await tester.test_tts_file_upload("你好，欢迎使用 IndexTTS2 语音合成服务。", suffix="upload")
 
         # 流式 TTS（使用较长文本以产生多个片段）
         long_text = (
