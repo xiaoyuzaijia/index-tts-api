@@ -22,9 +22,11 @@ import torch
 import yaml
 
 
-def load_checkpoint(model: torch.nn.Module, model_pth: str) -> dict:
+def load_checkpoint(model: torch.nn.Module, model_pth: str, dtype=None) -> dict:
     checkpoint = torch.load(model_pth, map_location='cpu')
     checkpoint = checkpoint['model'] if 'model' in checkpoint else checkpoint
+    if dtype is not None:
+        checkpoint = {k: v.to(dtype=dtype) if v.is_floating_point() else v for k, v in checkpoint.items()}
     model.load_state_dict(checkpoint, strict=True)
     info_path = re.sub('.pth$', '.yaml', model_pth)
     configs = {}

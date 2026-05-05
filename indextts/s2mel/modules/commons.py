@@ -584,6 +584,7 @@ def load_checkpoint2(
     ignore_modules=[],
     is_distributed=False,
     load_ema=False,
+    dtype=None,
 ):
     state = torch.load(path, map_location="cpu")
     params = state["net"]
@@ -612,6 +613,12 @@ def load_checkpoint2(
                 for k, v in params[key].items()
                 if k in model_state_dict and v.shape == model_state_dict[k].shape
             }
+            # Convert to target dtype when specified (before load_state_dict)
+            if dtype is not None:
+                filtered_state_dict = {
+                    k: v.to(dtype=dtype) if v.is_floating_point() else v
+                    for k, v in filtered_state_dict.items()
+                }
             skipped_keys = set(params[key].keys()) - set(filtered_state_dict.keys())
             if skipped_keys:
                 print(

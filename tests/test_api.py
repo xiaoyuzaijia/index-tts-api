@@ -25,7 +25,7 @@ import torch
 
 ROOT = Path(__file__).resolve().parent.parent
 SAMPLE_WAV = ROOT / "tests" / "sample_prompt.wav"       # 文件上传方式测试用
-SAMPLE_PROMPT_NAME = "sample_prompt.wav"                  # 服务端路径方式测试用
+SAMPLE_PROMPT_NAME = "voice_09.wav"                  # 服务端路径方式测试用
 OUTPUT_DIR = ROOT / "outputs"
 
 PASS = "✓"

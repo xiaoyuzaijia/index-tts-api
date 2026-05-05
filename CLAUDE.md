@@ -73,3 +73,32 @@ api.py                 # One-command launcher
 - **API extras**: `uv sync --extra api` adds fastapi, uvicorn, python-multipart, pydantic-settings
 - **PyTorch**: CUDA 12.8 from pytorch-cuda index
 - **Model files**: Expected in `checkpoints/` (download via huggingface-hub or modelscope)
+
+## Model Dtype Strategy
+
+When `use_fp16=True`, ALL models are converted to FP16 **on CPU before GPU transfer** to avoid FP32 intermediate tensors consuming GPU memory. The loading pattern is:
+
+```
+create model(FP32, CPU) → .half()(FP16, CPU) → load weights → .to(device)(FP16, GPU) → .eval()
+```
+
+Weight loading utilities (`load_checkpoint`, `load_checkpoint2`) accept an optional `dtype` parameter to convert checkpoint tensors before calling `load_state_dict`. This prevents dtype mismatch errors and avoids allocating FP32 state dicts on GPU.
+
+### Per-model FP16 loading
+
+| Model | Loading Utility | FP16 Conversion |
+|-------|----------------|-----------------|
+| GPT (`UnifiedVoice`) | `load_checkpoint(dtype=)` | `.half()` before load, dtype param on load |
+| semantic_model (`W2V-BERT`) | `build_semantic_model(dtype=)` | HuggingFace `from_pretrained(torch_dtype=)` |
+| semantic_codec (`RepCodec`) | `safetensors.load_model` | `.half()` before safetensors load |
+| s2mel (`MyModel`) | `load_checkpoint2(dtype=)` | `.half()` before load, dtype param on load |
+| CAMPPlus | `torch.load` + `load_state_dict` | `.half()` before load, state_dict manually `.half()` |
+| BigVGAN | `from_pretrained` | `.half()` after load, before `.to(device)` |
+
+### Autocast
+
+`torch.amp.autocast` is enabled for GPT generation, GPT forward, speaker/emo conditioning, and s2mel+BigVGAN sections when `use_fp16=True`. The autocast `dtype` is `torch.float16` for all sections.
+
+## Reference Audio Normalization
+
+`_load_and_cut_audio()` applies peak normalization to `target_peak=0.5` by default. This prevents FP16 precision artifacts (clipping/distortion) caused by high-energy reference audio saturating the CFM ODE solver and BigVGAN Snake activations. The normalization is transparent — speaker identity and prosody are preserved in the semantic features.
