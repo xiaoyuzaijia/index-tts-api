@@ -102,9 +102,10 @@ async def parse_tts_form(
     top_k: int = Form(30, ge=0, le=200),
     temperature: float = Form(0.8, ge=0.0, le=2.0),
     length_penalty: float = Form(0.0, ge=-2.0, le=2.0),
-    num_beams: int = Form(3, ge=1, le=10),
+    num_beams: int = Form(1, ge=1, le=10),
     repetition_penalty: float = Form(10.0, ge=0.1, le=20.0),
     max_mel_tokens: int = Form(1500, ge=50, le=1815),
+    diffusion_steps: int = Form(20, ge=1, le=100),
 ) -> TTSRequest:
     """将 Form 字段解析并校验为 TTSRequest 模型。"""
     try:
@@ -125,6 +126,7 @@ async def parse_tts_form(
             num_beams=num_beams,
             repetition_penalty=repetition_penalty,
             max_mel_tokens=max_mel_tokens,
+            diffusion_steps=diffusion_steps,
         )
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))

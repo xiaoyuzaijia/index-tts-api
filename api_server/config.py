@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     # 设备 / 优化
     use_fp16: bool = True
     device: str = ""  # 空字符串 = 自动检测
-    use_cuda_kernel: bool = True
+    use_cuda_kernel: bool = False
     use_deepspeed: bool = False
     use_accel: bool = False
     use_torch_compile: bool = False

@@ -28,9 +28,10 @@ class TTSRequest(BaseModel):
     top_k: int = Field(default=30, ge=0, le=200)
     temperature: float = Field(default=0.8, ge=0.0, le=2.0)
     length_penalty: float = Field(default=0.0, ge=-2.0, le=2.0)
-    num_beams: int = Field(default=3, ge=1, le=10)
+    num_beams: int = Field(default=1, ge=1, le=10)
     repetition_penalty: float = Field(default=10.0, ge=0.1, le=20.0)
     max_mel_tokens: int = Field(default=1500, ge=50, le=1815)
+    diffusion_steps: int = Field(default=20, ge=1, le=100)
 
     @field_validator("emo_vector")
     @classmethod
@@ -61,6 +62,7 @@ class TTSRequest(BaseModel):
             "num_beams": self.num_beams,
             "repetition_penalty": self.repetition_penalty,
             "max_mel_tokens": self.max_mel_tokens,
+            "diffusion_steps": self.diffusion_steps,
         }
 
 
