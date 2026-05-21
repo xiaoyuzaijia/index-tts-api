@@ -314,7 +314,10 @@ INDEXTTS_MODEL_DIR=checkpoints
 
 # 设备与优化
 INDEXTTS_USE_FP16=true
-INDEXTTS_USE_CUDA_KERNEL=true
+INDEXTTS_USE_CUDA_KERNEL=false  # linux建议开启
+INDEXTTS_USE_DEEPSPEED=false  # linux建议开启
+INDEXTTS_USE_ACCEL=false  # linux建议开启
+INDEXTTS_USE_TORCH_COMPILE=false  # linux建议开启
 
 # 服务
 INDEXTTS_HOST=0.0.0.0
@@ -325,6 +328,17 @@ INDEXTTS_MAX_UPLOAD_SIZE_MB=20
 # 服务端参考音频路径（分号分隔多个目录）
 INDEXTTS_ALLOWED_AUDIO_DIRS=examples
 ```
+
+### 加速参数说明
+
+以下参数可在 Linux + CUDA 环境下启用，进一步提升推理速度：
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `use_cuda_kernel` | false | BigVGAN 自定义 CUDA 融合激活内核，提升声码器速度 |
+| `use_deepspeed` | false | DeepSpeed 推理加速，降低 GPT2 显存占用 |
+| `use_accel` | false | GPT2 Flash Attention 加速（需安装 `flash_attn`，仅支持 Linux） |
+| `use_torch_compile` | false | `torch.compile` 图优化，加速 s2mel 解码器 |
 
 ## 运行测试
 

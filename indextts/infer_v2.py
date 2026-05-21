@@ -80,7 +80,7 @@ class IndexTTS2:
         self.use_accel = use_accel
         self.use_torch_compile = use_torch_compile
 
-        self.qwen_emo = QwenEmotion(os.path.join(self.model_dir, self.cfg.qwen_emo_path))
+        self.qwen_emo = QwenEmotion(os.path.join(self.model_dir, self.cfg.qwen_emo_path), device=self.device)
 
         self.gpt = UnifiedVoice(**self.cfg.gpt, use_accel=self.use_accel)
         if self.use_fp16:
@@ -429,10 +429,14 @@ class IndexTTS2:
             # automatically generate emotion vectors from text prompt
             if emo_text is None:
                 emo_text = text  # use main text prompt
+            t_start = time.perf_counter()
             emo_dict = self.qwen_emo.inference(emo_text)
+            text_gen_emo_time = time.perf_counter() - t_start
             print(f"detected emotion vectors from text: {emo_dict}")
             # convert ordered dict to list of vectors; the order is VERY important!
             emo_vector = list(emo_dict.values())
+        else:
+            text_gen_emo_time = None
 
         if emo_vector is not None:
             # we have emotion vectors; they can't be blended via alpha mixing
@@ -556,8 +560,8 @@ class IndexTTS2:
         sampling_rate = 22050
 
         wavs = []
-        gpt_gen_time = 0
-        gpt_forward_time = 0
+        gpt_ar_gen_time = 0       # autoregressive token generation
+        gpt_latent_time = 0       # single forward pass for latent extraction
         s2mel_time = 0
         bigvgan_time = 0
         has_warned = False
@@ -609,7 +613,7 @@ class IndexTTS2:
                         **generation_kwargs
                     )
 
-                gpt_gen_time += time.perf_counter() - m_start_time
+                gpt_ar_gen_time += time.perf_counter() - m_start_time
                 if not has_warned and (codes[:, -1] != self.stop_mel_token).any():
                     warnings.warn(
                         f"WARN: generation stopped due to exceeding `max_mel_tokens` ({max_mel_tokens}). "
@@ -658,7 +662,7 @@ class IndexTTS2:
                         emo_vec=emovec,
                         use_speed=use_speed,
                     )
-                    gpt_forward_time += time.perf_counter() - m_start_time
+                    gpt_latent_time += time.perf_counter() - m_start_time
 
                 dtype = self.dtype
                 with torch.amp.autocast(text_tokens.device.type, enabled=dtype is not None, dtype=dtype):
@@ -705,8 +709,10 @@ class IndexTTS2:
         wavs = self.insert_interval_silence(wavs, sampling_rate=sampling_rate, interval_silence=interval_silence)
         wav = torch.cat(wavs, dim=1)
         wav_length = wav.shape[-1] / sampling_rate
-        print(f">> gpt_gen_time: {gpt_gen_time:.2f} seconds")
-        print(f">> gpt_forward_time: {gpt_forward_time:.2f} seconds")
+        if text_gen_emo_time is not None:
+            print(f">> text_gen_emo_time: {text_gen_emo_time:.2f} seconds")
+        print(f">> gpt_ar_gen_time: {gpt_ar_gen_time:.2f} seconds")
+        print(f">> gpt_latent_time: {gpt_latent_time:.2f} seconds")
         print(f">> s2mel_time: {s2mel_time:.2f} seconds")
         print(f">> bigvgan_time: {bigvgan_time:.2f} seconds")
         print(f">> Total inference time: {end_time - start_time:.2f} seconds")
@@ -745,14 +751,16 @@ def find_most_similar_cosine(query_vector, matrix):
     return most_similar_index
 
 class QwenEmotion:
-    def __init__(self, model_dir):
+    def __init__(self, model_dir, device="cuda:0"):
         self.model_dir = model_dir
+        self.device = device
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_dir)
         self.model = AutoModelForCausalLM.from_pretrained(
             self.model_dir,
-            torch_dtype="float16",  # "auto"
-            device_map="auto"
+            torch_dtype=torch.float16,
         )
+        self.model = self.model.to(self.device)
+        self.model.eval()
         self.prompt = "文本情感分类"
         self.cn_key_to_en = {
             "高兴": "happy",
@@ -804,7 +812,6 @@ class QwenEmotion:
         return emotion_dict
 
     def inference(self, text_input):
-        start = time.time()
         messages = [
             {"role": "system", "content": f"{self.prompt}"},
             {"role": "user", "content": f"{text_input}"}
@@ -815,13 +822,14 @@ class QwenEmotion:
             add_generation_prompt=True,
             enable_thinking=False,
         )
-        model_inputs = self.tokenizer([text], return_tensors="pt").to(self.model.device)
+        model_inputs = self.tokenizer([text], return_tensors="pt").to(self.device)
 
         # conduct text completion
         generated_ids = self.model.generate(
             **model_inputs,
-            max_new_tokens=32768,
-            pad_token_id=self.tokenizer.eos_token_id
+            max_new_tokens=256,
+            do_sample=False,
+            pad_token_id=self.tokenizer.eos_token_id,
         )
         output_ids = generated_ids[0][len(model_inputs.input_ids[0]):].tolist()
 

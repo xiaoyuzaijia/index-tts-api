@@ -149,6 +149,58 @@ class APITester:
         except Exception as e:
             self._check("请求成功", False, str(e))
 
+    async def test_tts_auto_emotion(self, text: str, suffix: str = ""):
+        """测试从文本自动推断情感（use_emo_text=true）"""
+        print(bold(f"\n── POST /api/v1/tts (use_emo_text, text=\"{text[:20]}...\") ──"))
+
+        try:
+            async with httpx.AsyncClient(timeout=120) as client:
+                data = {
+                    "spk_audio_path": SAMPLE_PROMPT_NAME,
+                    "text": text,
+                    "use_emo_text": "true",
+                    "max_text_tokens_per_segment": 80,
+                    "top_p": 0.8,
+                    "temperature": 0.8,
+                }
+
+                r = await client.post(
+                    f"{self.base_url}/api/v1/tts",
+                    data=data,
+                )
+
+            self._check("HTTP 200", r.status_code == 200, f"status={r.status_code}")
+            if r.status_code != 200:
+                self._check("错误详情", False, r.text[:200])
+                return
+
+            content = r.content
+            self._check("响应体非空", len(content) > 0, f"{len(content)} bytes")
+
+            OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+            tag = suffix or text[:10].replace(" ", "_")
+            out_path = OUTPUT_DIR / f"api_test_auto_emo_{tag}.wav"
+            out_path.write_bytes(content)
+
+            try:
+                with wave.open(io.BytesIO(content), "rb") as wf:
+                    channels = wf.getnchannels()
+                    sample_width = wf.getsampwidth()
+                    framerate = wf.getframerate()
+                    n_frames = wf.getnframes()
+                    duration = n_frames / framerate
+                    self._check(
+                        "WAV 格式有效",
+                        True,
+                        f"{channels}ch, {sample_width*8}bit, {framerate}Hz, {duration:.1f}s → {out_path.name}",
+                    )
+                    self._check("音频时长 > 0.1s", duration > 0.1, f"{duration:.2f}s")
+            except Exception as e:
+                self._check("WAV 解析", False, str(e))
+
+        except Exception as e:
+            self._check("请求成功", False, str(e))
+
     async def test_tts_file_upload(self, text: str, suffix: str = ""):
         """测试非流式 TTS（使用文件上传方式）"""
         print(bold(f"\n── POST /api/v1/tts (文件上传, text=\"{text[:20]}...\") ──"))
@@ -405,6 +457,9 @@ async def main():
             suffix="happy",
             emo_vector="0.5,0,0,0,0,0,0,0",
         )
+
+        # 从文本自动推断情感
+        await tester.test_tts_auto_emotion("今天真是太开心了！", suffix="happy")
 
         # 文件上传方式
         await tester.test_tts_file_upload("你好，欢迎使用 IndexTTS2 语音合成服务。", suffix="upload")
