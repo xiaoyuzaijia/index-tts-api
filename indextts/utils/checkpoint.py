@@ -28,6 +28,7 @@ def load_checkpoint(model: torch.nn.Module, model_pth: str, dtype=None) -> dict:
     if dtype is not None:
         checkpoint = {k: v.to(dtype=dtype) if v.is_floating_point() else v for k, v in checkpoint.items()}
     model.load_state_dict(checkpoint, strict=True)
+    del checkpoint  # 释放中间张量，避免 CPU 内存双份占用
     info_path = re.sub('.pth$', '.yaml', model_pth)
     configs = {}
     if os.path.exists(info_path):

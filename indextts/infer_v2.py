@@ -80,7 +80,7 @@ class IndexTTS2:
         self.use_accel = use_accel
         self.use_torch_compile = use_torch_compile
 
-        self.qwen_emo = QwenEmotion(os.path.join(self.model_dir, self.cfg.qwen_emo_path), device=self.device)
+        self.qwen_emo = None  # 懒加载：首次 use_emo_text=True 时才加载
 
         self.gpt = UnifiedVoice(**self.cfg.gpt, use_accel=self.use_accel)
         if self.use_fp16:
@@ -89,6 +89,8 @@ class IndexTTS2:
         load_checkpoint(self.gpt, self.gpt_path, dtype=torch.float16 if self.use_fp16 else None)
         self.gpt = self.gpt.to(self.device)
         self.gpt.eval()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         print(">> GPT weights restored from:", self.gpt_path)
 
         if use_deepspeed:
@@ -122,6 +124,8 @@ class IndexTTS2:
             self.semantic_std = self.semantic_std.half()
         self.semantic_mean = self.semantic_mean.to(self.device)
         self.semantic_std = self.semantic_std.to(self.device)
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         semantic_codec = build_semantic_codec(self.cfg.semantic_codec)
         if self.use_fp16:
@@ -130,6 +134,8 @@ class IndexTTS2:
         safetensors.torch.load_model(semantic_codec, semantic_code_ckpt)
         self.semantic_codec = semantic_codec.to(self.device)
         self.semantic_codec.eval()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         print('>> semantic_codec weights restored from: {}'.format(semantic_code_ckpt))
 
         s2mel_path = os.path.join(self.model_dir, self.cfg.s2mel_checkpoint)
@@ -147,6 +153,8 @@ class IndexTTS2:
         )
         self.s2mel = s2mel.to(self.device)
         self.s2mel.models['cfm'].estimator.setup_caches(max_batch_size=1, max_seq_length=8192)
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         # Enable torch.compile optimization if requested
         if self.use_torch_compile:
@@ -170,6 +178,8 @@ class IndexTTS2:
         del state_dict
         self.campplus_model = campplus_model.to(self.device)
         self.campplus_model.eval()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         print(">> campplus_model weights restored from:", campplus_ckpt_path)
 
         bigvgan_name = self.cfg.vocoder.name
@@ -179,6 +189,8 @@ class IndexTTS2:
         self.bigvgan = self.bigvgan.to(self.device)
         self.bigvgan.remove_weight_norm()
         self.bigvgan.eval()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         print(">> bigvgan weights restored from:", bigvgan_name)
 
         self.bpe_path = os.path.join(self.model_dir, self.cfg.dataset["bpe_model"])
@@ -426,6 +438,13 @@ class IndexTTS2:
             emo_audio_prompt = None
 
         if use_emo_text:
+            # 懒加载 QwenEmotion 模型（仅在需要时加载，省显存）
+            if self.qwen_emo is None:
+                print(">> 首次 use_emo_text=True，加载 QwenEmotion 模型...")
+                self.qwen_emo = QwenEmotion(
+                    os.path.join(self.model_dir, self.cfg.qwen_emo_path),
+                    device=self.device
+                )
             # automatically generate emotion vectors from text prompt
             if emo_text is None:
                 emo_text = text  # use main text prompt
@@ -832,6 +851,7 @@ class QwenEmotion:
             pad_token_id=self.tokenizer.eos_token_id,
         )
         output_ids = generated_ids[0][len(model_inputs.input_ids[0]):].tolist()
+        del generated_ids, model_inputs  # 清理 KV cache 和输入张量
 
         # parsing thinking content
         try:

@@ -627,7 +627,7 @@ def load_checkpoint2(
             print("%s loaded" % key)
             model.models[key].load_state_dict(filtered_state_dict, strict=False)
     model.eval()
-#     _ = [model[key].eval() for key in model]
+    del state, params  # 释放中间张量，避免 CPU 内存双份占用
 
     if not load_only_params:
         epoch = state["epoch"] + 1

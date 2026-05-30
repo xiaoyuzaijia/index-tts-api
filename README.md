@@ -101,7 +101,7 @@ print(r.json())
 
 ### POST `/api/v1/tts`
 
-非流式语音合成。可通过服务端路径或上传文件指定参考音频，返回完整 WAV。
+非流式语音合成。可通过服务端路径或上传文件指定参考音频，返回完整 WAV。服务端参考音频默认目录`.examples/`
 
 #### 基本示例
 
@@ -127,13 +127,26 @@ with open("output.wav", "wb") as out:
     out.write(r.content)
 ```
 
-指定上传音频文件（替代 `spk_audio_path`）：
+从客户端指定音频文件上传（替代 `spk_audio_path`）：
 
 ```bash
 curl -X POST http://localhost:8000/api/v1/tts \
-  -F "spk_audio=@examples/voice_01.wav" \
+  -F "spk_audio=@myvoice/voice_upload.wav" \
   -F "text=你好，欢迎使用 IndexTTS2 语音合成服务。" \
   -o output.wav
+```
+
+```python
+import requests
+
+r = requests.post(
+    "http://localhost:8000/api/v1/tts",
+    files={"spk_audio": ("voice_upload.wav", open("myvoice/voice_upload.wav", "rb"), "audio/wav")},
+    data={"text": "你好，欢迎使用 IndexTTS2 语音合成服务。"},
+    timeout=120,
+)
+with open("output.wav", "wb") as out:
+    out.write(r.content)
 ```
 
 #### 从文本自动决定情感的示例
