@@ -131,29 +131,69 @@ Client                     routes.py                  service.py           index
 
 ### 流式 TTS (`POST /api/v1/tts/stream`)
 
-流式端点与非流式的核心差异：
+流式端点的核心设计目标：**每生成一段音频就立刻发送给客户端**，而非等全部生成完毕再一次性发送。
 
-1. 调用 `model.infer_generator()` 而非 `model.infer()`
-2. 在持有 `inference_lock` 期间**一次性消费整个生成器**，收集所有片段到 `chunks` 列表
-3. 退出锁后，通过 SSE (`text/event-stream`) 逐段发送
+实现方案：`asyncio.Queue` 桥接同步线程池与异步事件循环。
 
 ```
-_sync_stream() 内部:
-  │
-  ├─ 1. 调用 infer_generator(stream_return=True, ...) → 返回生成器
-  │
-  ├─ 2. with service.inference_lock:        ← 锁住整段生成过程
-  │       for item in gen:
-  │           if isinstance(item, Tensor):
-  │               转为 int16 → WAV bytes → base64
-  │               追加到 chunks[]
-  │
-  ├─ 3. 返回 chunks[] （锁已释放）
-  │
-  └─ 4. generate_sse() async generator:
-          for chunk in chunks:
-              yield f"data: {json}\n\n"
-          yield f"data: {{done: true}}\n\n"
+                        ──── 线程池（同步）────          ──── 事件循环（异步）────
+
+                        _sync_stream()                   generate_sse()
+                             │                                │
+ indextts 生成器              │                                │
+ [段0] ──────────────────▶   │                                │
+                             │  q.put_nowait(段0)             │
+                             │  call_soon_threadsafe ────────▶│  await q.get() → 段0
+                             │                                │  yield "data: {段0}\n\n"  ← 客户端立刻收到
+                             │                                │
+ [段1] ──────────────────▶   │                                │
+                             │  q.put_nowait(段1)             │
+                             │  call_soon_threadsafe ────────▶│  await q.get() → 段1
+                             │                                │  yield "data: {段1}\n\n"  ← 客户端立刻收到
+                             │                                │
+ [段2] ──────────────────▶   │                                │
+                             │  q.put_nowait(段2)             │
+                             │  call_soon_threadsafe ────────▶│  await q.get() → 段2
+                             │                                │
+ 生成结束 ─────────────────▶  │                                │
+                             │  q.put_nowait(None)            │
+                             │  call_soon_threadsafe ────────▶│  await q.get() → None → break
+                             │                                │  yield "data: {done}\n\n"
+```
+
+**关键机制：`loop.call_soon_threadsafe(q.put_nowait, chunk)`**
+
+asyncio.Queue 不是线程安全的，只能在事件循环线程操作。`call_soon_threadsafe` 将 `put_nowait` 回调排入事件循环的待处理队列，然后立刻返回（不阻塞线程池线程）。事件循环在下次迭代时从**自己的线程**执行 `q.put_nowait(chunk)`，唤醒 `await q.get()`。
+
+**代码结构：**
+
+```python
+async def generate_sse():
+    q: asyncio.Queue = asyncio.Queue()  # 联程安全的队列
+    error_ref: list[Exception] = []     # 线程间错误传递
+
+    def _sync_stream():
+        """在 thread pool 中运行：持有推理锁，逐段推送到队列。"""
+        try:
+            gen = service.model.infer_generator(stream_return=True, ...)
+            with service.inference_lock:          # 锁住整段生成
+                for item in gen:
+                    if isinstance(item, torch.Tensor):
+                        chunk = tensor_to_base64(item)
+                        loop.call_soon_threadsafe(q.put_nowait, chunk)  # 即时推送
+        except Exception as e:
+            error_ref.append(e)
+        finally:
+            loop.call_soon_threadsafe(q.put_nowait, None)  # 哨兵
+
+    loop.run_in_executor(None, _sync_stream)  # 后台启动生产者
+
+    # 消费者：从队列中 await，段到达时立刻 yield
+    while True:
+        chunk = await q.get()
+        if chunk is None:
+            break
+        yield f"data: {json.dumps(chunk)}\n\n"
 ```
 
 **SSE 消息格式：**
@@ -189,11 +229,12 @@ def _sync_infer():
     with service.inference_lock:      # 阻塞等待
         return service.model.infer(...)
 
-# routes.py — 流式
+# routes.py — 流式（asyncio.Queue 真流式）
 def _sync_stream():
     with service.inference_lock:      # 整段生成过程持有锁
         for item in gen:
-            ...
+            tensor_to_base64(item)
+            loop.call_soon_threadsafe(q.put_nowait, chunk)  # 即时推送到异步队列
 ```
 
 ### 为什么推理在线程池中执行？

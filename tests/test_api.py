@@ -112,10 +112,12 @@ class APITester:
                     data["emo_vector"] = emo_vector
                     data["emo_alpha"] = 0.6
 
+                start_time = time.time()
                 r = await client.post(
                     f"{self.base_url}/api/v1/tts",
                     data=data,
                 )
+                elapsed = time.time() - start_time
 
             self._check("HTTP 200", r.status_code == 200, f"status={r.status_code}")
             if r.status_code != 200:
@@ -137,12 +139,18 @@ class APITester:
                     framerate = wf.getframerate()
                     n_frames = wf.getnframes()
                     duration = n_frames / framerate
+                    rtf = elapsed / duration if duration > 0 else 0
                     self._check(
                         "WAV 格式有效",
                         True,
                         f"{channels}ch, {sample_width*8}bit, {framerate}Hz, {duration:.1f}s → {out_path.name}",
                     )
                     self._check("音频时长 > 0.1s", duration > 0.1, f"{duration:.2f}s")
+                    self._check(
+                        "推理耗时",
+                        elapsed > 0,
+                        f"{elapsed:.1f}s (RTF={rtf:.2f})",
+                    )
             except Exception as e:
                 self._check("WAV 解析", False, str(e))
 
@@ -164,10 +172,12 @@ class APITester:
                     "temperature": 0.8,
                 }
 
+                start_time = time.time()
                 r = await client.post(
                     f"{self.base_url}/api/v1/tts",
                     data=data,
                 )
+                elapsed = time.time() - start_time
 
             self._check("HTTP 200", r.status_code == 200, f"status={r.status_code}")
             if r.status_code != 200:
@@ -189,12 +199,18 @@ class APITester:
                     framerate = wf.getframerate()
                     n_frames = wf.getnframes()
                     duration = n_frames / framerate
+                    rtf = elapsed / duration if duration > 0 else 0
                     self._check(
                         "WAV 格式有效",
                         True,
                         f"{channels}ch, {sample_width*8}bit, {framerate}Hz, {duration:.1f}s → {out_path.name}",
                     )
                     self._check("音频时长 > 0.1s", duration > 0.1, f"{duration:.2f}s")
+                    self._check(
+                        "推理耗时",
+                        elapsed > 0,
+                        f"{elapsed:.1f}s (RTF={rtf:.2f})",
+                    )
             except Exception as e:
                 self._check("WAV 解析", False, str(e))
 
@@ -219,11 +235,13 @@ class APITester:
                     "temperature": 0.8,
                 }
 
+                start_time = time.time()
                 r = await client.post(
                     f"{self.base_url}/api/v1/tts",
                     files=files,
                     data=data,
                 )
+                elapsed = time.time() - start_time
 
             self._check("HTTP 200", r.status_code == 200, f"status={r.status_code}")
             if r.status_code != 200:
@@ -245,12 +263,18 @@ class APITester:
                     framerate = wf.getframerate()
                     n_frames = wf.getnframes()
                     duration = n_frames / framerate
+                    rtf = elapsed / duration if duration > 0 else 0
                     self._check(
                         "WAV 格式有效",
                         True,
                         f"{channels}ch, {sample_width*8}bit, {framerate}Hz, {duration:.1f}s → {out_path.name}",
                     )
                     self._check("音频时长 > 0.1s", duration > 0.1, f"{duration:.2f}s")
+                    self._check(
+                        "推理耗时",
+                        elapsed > 0,
+                        f"{elapsed:.1f}s (RTF={rtf:.2f})",
+                    )
             except Exception as e:
                 self._check("WAV 解析", False, str(e))
 
@@ -274,6 +298,8 @@ class APITester:
                 segments = []
                 errors = []
                 start_time = time.time()
+                first_segment_time = None
+                last_segment_time = start_time
 
                 async with client.stream(
                     "POST",
@@ -296,6 +322,16 @@ class APITester:
                                 elif "done" in msg:
                                     break
                                 elif "audio_base64" in msg:
+                                    now = time.time()
+                                    if first_segment_time is None:
+                                        first_segment_time = now
+                                    else:
+                                        inter_gap = now - last_segment_time
+                                        self._check(
+                                            f"  段间间隔 #{msg.get('segment', 0)}: {inter_gap:.2f}s",
+                                            True,
+                                        )
+                                    last_segment_time = now
                                     segments.append(msg)
                             except json.JSONDecodeError:
                                 pass
@@ -304,6 +340,22 @@ class APITester:
 
                 self._check("收到音频片段", len(segments) > 0, f"{len(segments)} 个片段")
                 self._check("无错误", len(errors) == 0, "; ".join(errors) if errors else "OK")
+
+                # 流式延时统计
+                if first_segment_time is not None:
+                    first_wait = first_segment_time - start_time
+                    self._check(
+                        "首段等待时间",
+                        first_wait > 0,
+                        f"{first_wait:.2f}s",
+                    )
+                if len(segments) >= 2:
+                    avg_gap = (elapsed - (first_segment_time - start_time)) / (len(segments) - 1)
+                    self._check(
+                        "段间平均间隔",
+                        avg_gap > 0,
+                        f"{avg_gap:.2f}s ({len(segments)} 段, 总耗时 {elapsed:.1f}s)",
+                    )
 
                 # 保存每个片段到 outputs/ 并校验
                 if segments:

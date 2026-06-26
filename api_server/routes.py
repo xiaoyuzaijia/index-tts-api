@@ -229,48 +229,69 @@ async def tts_stream(
             sr = service.model.cfg.s2mel["preprocess_params"]["sr"]
             kwargs = request.to_generation_kwargs()
 
+            # asyncio.Queue 对联程安全；通过 call_soon_threadsafe 从线程侧写入
+            q: asyncio.Queue = asyncio.Queue()
+            error_ref: list[Exception] = []
+
             def _sync_stream():
-                gen = service.model.infer_generator(
-                    spk_audio_prompt=str(spk_path),
-                    text=request.text,
-                    output_path=None,
-                    emo_audio_prompt=str(emo_path) if emo_path else None,
-                    emo_alpha=request.emo_alpha,
-                    emo_vector=request.emo_vector,
-                    use_emo_text=request.use_emo_text,
-                    emo_text=request.emo_text,
-                    use_random=request.use_random,
-                    interval_silence=request.interval_silence,
-                    verbose=False,
-                    max_text_tokens_per_segment=request.max_text_tokens_per_segment,
-                    stream_return=True,
-                    **kwargs,
-                )
-                chunks = []
-                segment_idx = 0
-                with service.inference_lock:
-                    for item in gen:
-                        if item is None:
-                            continue
-                        if isinstance(item, torch.Tensor):
-                            audio_tensor = item.to(torch.int16)
-                            buf = io.BytesIO()
-                            torchaudio.save(buf, audio_tensor, sr, format="wav")
-                            b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-                            chunks.append({
-                                "segment": segment_idx,
-                                "sample_rate": sr,
-                                "audio_base64": b64,
-                            })
-                            segment_idx += 1
-                return chunks
+                """在 thread pool 中运行：持有推理锁，逐段推送到 asyncio 队列。"""
+                try:
+                    gen = service.model.infer_generator(
+                        spk_audio_prompt=str(spk_path),
+                        text=request.text,
+                        output_path=None,
+                        emo_audio_prompt=str(emo_path) if emo_path else None,
+                        emo_alpha=request.emo_alpha,
+                        emo_vector=request.emo_vector,
+                        use_emo_text=request.use_emo_text,
+                        emo_text=request.emo_text,
+                        use_random=request.use_random,
+                        interval_silence=request.interval_silence,
+                        verbose=False,
+                        max_text_tokens_per_segment=request.max_text_tokens_per_segment,
+                        stream_return=True,
+                        **kwargs,
+                    )
+                    segment_idx = 0
+                    with service.inference_lock:
+                        for item in gen:
+                            if item is None:
+                                continue
+                            if isinstance(item, torch.Tensor):
+                                audio_tensor = item.to(torch.int16)
+                                buf = io.BytesIO()
+                                torchaudio.save(buf, audio_tensor, sr, format="wav")
+                                b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+                                chunk = {
+                                    "segment": segment_idx,
+                                    "sample_rate": sr,
+                                    "audio_base64": b64,
+                                }
+                                segment_idx += 1
+                                # 线程安全地推送到 asyncio 队列
+                                loop.call_soon_threadsafe(q.put_nowait, chunk)
+                except Exception as e:
+                    error_ref.append(e)
+                finally:
+                    # 哨兵 None 通知消费者结束
+                    loop.call_soon_threadsafe(q.put_nowait, None)
 
-            chunks = await loop.run_in_executor(None, _sync_stream)
+            # 在 thread pool 中启动生产者（不 await，让它在后台运行）
+            loop.run_in_executor(None, _sync_stream)
 
-            for chunk in chunks:
+            # 消费者：逐段从队列取出并 SSE 发送
+            segment_count = 0
+            while True:
+                chunk = await q.get()
+                if chunk is None:
+                    break  # 生成完毕（或出错）
+                segment_count += 1
                 yield f"data: {json.dumps(chunk)}\n\n"
 
-            yield f"data: {json.dumps({'done': True, 'total_segments': len(chunks)})}\n\n"
+            if error_ref:
+                yield f"data: {json.dumps({'error': str(error_ref[0])})}\n\n"
+            else:
+                yield f"data: {json.dumps({'done': True, 'total_segments': segment_count})}\n\n"
 
         except Exception as e:
             traceback.print_exc()

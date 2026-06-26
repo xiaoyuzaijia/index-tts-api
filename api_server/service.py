@@ -1,5 +1,4 @@
 import threading
-import asyncio
 
 import torch
 
@@ -75,31 +74,3 @@ class TTSService:
     @property
     def is_loaded(self) -> bool:
         return self._loaded and self._model is not None
-
-
-async def run_inference(service: TTSService, spk_path: str, emo_path: str | None, request):
-    """在线程池中运行推理，保持事件循环不阻塞。"""
-    loop = asyncio.get_running_loop()
-
-    def _sync_infer():
-        with service.inference_lock:
-            kwargs = request.to_generation_kwargs()
-            # infer() 已返回 (sampling_rate, numpy_array)
-            return service.model.infer(
-                spk_audio_prompt=spk_path,
-                text=request.text,
-                output_path=None,
-                emo_audio_prompt=emo_path,
-                emo_alpha=request.emo_alpha,
-                emo_vector=request.emo_vector,
-                use_emo_text=request.use_emo_text,
-                emo_text=request.emo_text,
-                use_random=request.use_random,
-                interval_silence=request.interval_silence,
-                verbose=False,
-                max_text_tokens_per_segment=request.max_text_tokens_per_segment,
-                stream_return=False,
-                **kwargs,
-            )
-
-    return await loop.run_in_executor(None, _sync_infer)
